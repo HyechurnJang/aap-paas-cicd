@@ -1,0 +1,124 @@
+---
+project: vmk
+kind: PIPELINE
+name: PaaS CICD
+icon: organization,left, is-error
+enabled: true
+global: false
+concurrency: 10
+options: [
+  GIT_TRIGGER
+]
+workspace:
+  type: DOCKER
+  endpoint: ''
+  image: ''
+  registry: ''
+  path: ''
+  autoCloneForTrigger: false
+  limits:
+    cpu: 1.0
+    memory: 512
+stageOrder:
+- Build
+- Test
+- Production
+stages:
+  Test:
+    taskOrder:
+    - Deploy
+    - Check Web Service
+    - Is OK
+    tasks:
+      Deploy:
+        type: K8S
+        endpoints:
+          scm: Github PaaS CICD
+          kubernetesServer: oss-vmk-test
+        input:
+          action: APPLY
+          timeout: 15
+          filePath: src/manifest-test.yaml
+          scmConstants:
+            REGISTRY_PATH: ${var.REGISTRY_PATH}
+            TAG_VER: ${Build.Build.output.response}
+          yaml: ''
+      Is OK:
+        type: Condition
+        input:
+          condition: ${Test.Check Web Service.output.responseCode} == 200
+      Check Web Service:
+        type: REST
+        input:
+          action: get
+          url: http://192.168.0.10:31000/index.html
+          headers:
+            Accept: text/html
+          payload: ''
+  Build:
+    taskOrder:
+    - Approval
+    - Build
+    tasks:
+      Build:
+        type: SSH
+        input:
+          script: |-
+            # Create Version Tag
+            TAG_VER=$(date +"%Y%m%d.%H%M%S")
+            echo "$TAG_VER" | tr -d '\r' > $SCRIPT_RESPONSE_FILE
+
+            # Git Pull
+            cd /opt/aap-paas-cicd
+            git pull
+
+            # Build Container
+            cd /opt/aap-paas-cicd/src
+            docker build -t ${var.REGISTRY_PATH}/vmk-nginx:$TAG_VER .
+
+            # Push Container
+            docker push ${var.REGISTRY_PATH}/vmk-nginx:$TAG_VER
+            docker rmi -f ${var.REGISTRY_PATH}/vmk-nginx:$TAG_VER
+          username: ${var.CI_USERNAME}
+          password: ${var.CI_PASSWORD}
+          passphrase: ''
+          privatekey: ''
+          host: ${var.CI_HOSTNAME}
+          workingDirectory: ''
+          arguments: [
+            ]
+          environmentVariables: {
+            }
+          continueOnCommandFailure: false
+      Approval:
+        type: UserOperation
+        preCondition: ${requestBy} != "admin"
+        input:
+          approvers:
+          - jangh
+          approverGroups: [
+            ]
+          summary: Pipeline Triggered by ${requestBy}
+          description: ''
+          sendemail: false
+          expiration: 3
+          expirationUnit: DAYS
+          pipelineName: ${name}
+          cancelPreviousPendingUserOp: false
+  Production:
+    taskOrder:
+    - Deploy
+    tasks:
+      Deploy:
+        type: K8S
+        endpoints:
+          scm: Github PaaS CICD
+          kubernetesServer: tkc-vmk-prod
+        input:
+          action: APPLY
+          timeout: 15
+          filePath: src/manifest-prod.yaml
+          scmConstants:
+            REGISTRY_PATH: ${var.REGISTRY_PATH}
+            TAG_VER: ${Build.Build.output.response}
+          yaml: ''
